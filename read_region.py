@@ -1,4 +1,6 @@
-from tifffile import TiffFile
+# from tifffile import TiffFile
+from SimpleTiff import SimpleTiff
+
 import numpy as np
 from imagecodecs import jpeg_decode
 from imagecodecs import jpeg2k_decode
@@ -50,9 +52,9 @@ def read_region(page, i0, j0, h, w, cache):
                     page.samplesperpixel), dtype=page.dtype)
     fh = page.parent.filehandle
     print(page.dtype, type(page.dtype), "  dtype")
-    jpegtables = page.tags.get('JPEGTables', None)
-    if jpegtables is not None:
-        jpegtables = jpegtables.value
+    # jpegtables = page.tags.get('JPEGTables', None)
+    # if jpegtables is not None:
+    #     jpegtables = jpegtables.value
 
     for i in range(tile_i0, tile_i1):
         for j in range(tile_j0, tile_j1):
@@ -64,8 +66,9 @@ def read_region(page, i0, j0, h, w, cache):
             if index in cache:
                 data = cache[index]
             else:
-                fh.seek(offset)
-                data = fh.read(bytecount)
+                #fh.seek(offset)
+                #data = fh.read(bytecount)
+                data = fh.seek_and_read(offset, bytecount)
                 cache[index] = data
             print('index offset: ', index, offset, bytecount, offset + bytecount)
             # tile , indices, shape = jpeg2k_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 

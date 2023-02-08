@@ -40,7 +40,8 @@ pathPrefix = '/Users/zhanxw/Downloads/test.tiff/'
 tiffFile = pathPrefix + '10021.svs'
 
 import numpy
-from tifffile import TiffFile
+# from tifffile import TiffFile
+from SimpleTiff import SimpleTiff
 import math
 cache = {}
 def get_svs_tile(level, col, row):
@@ -53,7 +54,8 @@ def get_svs_tile(level, col, row):
     ## return results
 
     # return None
-    t = TiffFile(tiffFile)
+    # t = TiffFile(tiffFile)
+    t = SimpleTiff(tiffFile)
     p0 = t.pages[0]
     p0_size = [p0.imagewidth, p0.imagelength]
     p3 = t.pages[3]

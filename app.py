@@ -42,7 +42,10 @@ tiffFile = pathPrefix + '10021.svs'
 import numpy
 from tifffile import TiffFile
 import math
+cache = {}
 def get_svs_tile(level, col, row):
+    if level not in cache:
+        cache[level] = {}
     ## find the tiff image to work on
 
     ## find tiff tiles 
@@ -50,13 +53,12 @@ def get_svs_tile(level, col, row):
     ## return results
 
     # return None
-
     t = TiffFile(tiffFile)
     p0 = t.pages[0]
     p0_size = [p0.imagewidth, p0.imagelength]
     p3 = t.pages[3]
     p3_size = [p3.imagewidth, p3.imagelength]
-    page  = [p for p in t.pages]
+    page  = [p for p in t.pages if math.fabs(p.imagewidth/p.imagelength - p0.imagewidth / p0.imagelength) < 0.01]
     page_size = [ (p.imagewidth, p.imagelength) for p in page ]
     s = (p0.imagewidth, p0.imagelength)
     dims = []
@@ -74,7 +76,7 @@ def get_svs_tile(level, col, row):
     ref_page_size = p3
     requested_dims = dims[-(level+1)]
 
-    ref = [ p for p in t.pages if p.imagewidth >= requested_dims[0]][-1]
+    ref = [ p for p in page if p.imagewidth >= requested_dims[0]][-1]
     ref_size = [ref.imagewidth, ref.imagelength]
     scale = ref_size[0] / requested_dims[0]
     print("scale = ", scale, ref_size[0], requested_dims[0])
@@ -89,8 +91,7 @@ def get_svs_tile(level, col, row):
     import read_region
     # ret = read_region.read_region(p0, 100, 200, 255, 255)
     print("read_region:", ref_size, page_y, page_x, page_height, page_width )
-    ret = read_region.read_region(ref, page_y, page_x, page_height, page_width)
-    # success, frame = vidcap.read()
+    ret = read_region.read_region(ref, page_y, page_x, page_height, page_width, cache[level])
     import cv2
     ret_s = cv2.resize(ret[0,:], (255, 255))
     _, JPEG = cv2.imencode('.jpeg', ret_s)

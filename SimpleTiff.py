@@ -35,7 +35,7 @@ class FileReader:
             self.filehandle.seek(offset)
             data = self.filehandle.read(bytecount)
         return data
-    def close():
+    def close(self):
         if not self._remote:
             self.filehandle.close()
 

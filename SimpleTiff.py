@@ -4,6 +4,14 @@ from struct import unpack_from
 import numpy as np
 import math
 from imagecodecs import jpeg2k_decode
+from functools import lru_cache
+
+def empty(*args):
+    pass
+if False: # set it to True for debugging
+    debug = print
+else:
+    debug = empty
 
 class FileReader:
     def __init__(self, fn):
@@ -14,6 +22,7 @@ class FileReader:
             self._remote = False
             self._name = fn
             self.filehandle = open(fn, 'rb')
+    @lru_cache
     def seek_and_read(self, offset, bytecount):
         if self._remote:
             data = BytesIO(requests.get(self._name, 
@@ -70,11 +79,11 @@ class TiffPage:
         self.parse_data(data)
     def parse_data(self, data):
         endian = self.parent._endian
-        print("-"*25 + str(self._offset) + " " + "0x%06x" % self._offset + "-"*25)
+        debug("-"*25 + str(self._offset) + " " + "0x%06x" % self._offset + "-"*25)
         # ret = f.seek(offset, 0)
         # num_d_entries = f.read(2)
         num_d_entries = unpack_from(endian + "H", data[:2])[0]
-        print(num_d_entries, "entries")
+        debug(num_d_entries, "entries")
         assert(len(data) == 2 + num_d_entries * 12 + 4 )
 
         entries = [data[(2+i*12):(2+i*12 + 12)] for i in range(num_d_entries)]
@@ -118,9 +127,9 @@ class TiffPage:
             tag, type, count, v, o = val
             val = tag, type, str(count), str(v), str(o)
             # print(val)
-            print('%32s\t%s\t%s\t%s\t%s' % val)
+            debug('%32s\t%s\t%s\t%s\t%s' % val)
 
-        print("self._next_offset = %d 0x%06x" % (self._next_offset, self._next_offset))
+        debug("self._next_offset = %d 0x%06x" % (self._next_offset, self._next_offset))
         # assign common properties
         self.is_tiled = False
         self.imagewidth = entriesDict['256:ImageWidth'][2]
@@ -151,24 +160,23 @@ class SimpleTiff:
         self.pages = []
         self._endian = None
         self.open()
-        print("remote: ", self._name)
     def open(self):
         # read header
-        self._header = self.filehandle.seek_and_read(0, 8)
-        if self._header[:2] == b'MM':
-            print("Big endian")
+        self.header = self.filehandle.seek_and_read(0, 8)
+        if self.header[:2] == b'MM':
+            debug("Big endian")
             endian = ">"
-        elif self._header[:2] == b'II':
-            print("Little endian")
+        elif self.header[:2] == b'II':
+            debug("Little endian")
             endian = "<"
         else:
             raise ValueError('TIFF header is not recognized')
         self._endian = endian
 
-        magic = self._header[2:4]
+        magic = self.header[2:4]
         assert(42 == unpack_from(endian+"H",magic)[0])
 
-        offset = self._header[4:8]
+        offset = self.header[4:8]
         offset = unpack_from(endian + "I", offset)[0]
 
         # read IFDs
@@ -236,7 +244,7 @@ class SimpleTiff:
         ref = [ p for p in page if p.imagewidth >= requested_dims[0]][-1]
         ref_size = [ref.imagewidth, ref.imagelength]
         scale = ref_size[0] / requested_dims[0]
-        print("scale = ", scale, ref_size[0], requested_dims[0])
+        debug("scale = ", scale, ref_size[0], requested_dims[0])
         request_x = col 
         request_y = row
         page_x = min(request_x * 255 * scale, ref_size[0])
@@ -247,7 +255,7 @@ class SimpleTiff:
 
         import read_region
         # ret = read_region.read_region(p0, 100, 200, 255, 255)
-        print("read_region:", ref_size, page_y, page_x, page_height, page_width )
+        debug("read_region:", ref_size, page_y, page_x, page_height, page_width )
         ret = self.read_region(ref, page_y, page_x, page_height, page_width, None) # TODO: add cache back cache[level])
         import cv2
         ret_s = cv2.resize(ret[0,:], (255, 255))
@@ -280,12 +288,12 @@ class SimpleTiff:
 
         im_width = page.imagewidth
         im_height = page.imagelength
-        # print("im dimension", im_width, im_height, " and request", i0, j0, h, w, )
+        # debug("im dimension", im_width, im_height, " and request", i0, j0, h, w, )
         if h < 1 or w < 1:
             raise ValueError("h and w must be strictly positive.")
 
         if i0 < 0 or j0 < 0 or i0 + h >= im_height or j0 + w >= im_width:
-            print(i0, h, im_height, " --- ", j0, w, im_width)
+            debug(i0, h, im_height, " --- ", j0, w, im_width)
             raise ValueError("Requested crop area is out of image bounds.")
 
         tile_width, tile_height = page.tilewidth, page.tilelength
@@ -307,7 +315,7 @@ class SimpleTiff:
 
         for i in range(tile_i0, tile_i1):
             for j in range(tile_j0, tile_j1):
-                print(i, j)
+                debug(i, j)
                 index = int(i * tile_per_line + j)
 
                 offset = page.dataoffsets[index]
@@ -321,22 +329,17 @@ class SimpleTiff:
                 #     data = fh.seek_and_read(offset, bytecount)
                 #     cache[index] = data
                 data = fh.seek_and_read(offset, bytecount)
-                print('index offset: ', index, offset, bytecount, offset + bytecount)
+                debug('index offset: ', index, offset, bytecount, offset + bytecount)
                 # tile , indices, shape = jpeg2k_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 
                 tile = jpeg2k_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 
-                print("tile = ", tile.shape)
 
                 im_i = (i - tile_i0) * tile_height
                 im_j = (j - tile_j0) * tile_width
-                print("out shape: ", out.shape)
-                print("tile shape: ", tile.shape)
-                print(im_i, im_i + tile_height, im_j, im_j + tile_width)
                 out[:, im_i: im_i + tile_height, im_j: im_j + tile_width, :] = tile
 
         im_i0 = i0 - tile_i0 * tile_height
         im_j0 = j0 - tile_j0 * tile_width
 
-        print("out dim = ", out.shape)
         return out[:, im_i0: im_i0 + h, im_j0: im_j0 + w, :]
 
 if __name__ == "__main__":
@@ -344,9 +347,10 @@ if __name__ == "__main__":
     urlPrefix = 'http://localhost:8000/'
     localTiffFile = pathPrefix + '10021.svs'
     netTiffFile = urlPrefix + '10021.svs'
-    print(SimpleTiff(localTiffFile)._header)
-    print(SimpleTiff(netTiffFile)._header)
-    assert(SimpleTiff(localTiffFile)._header == SimpleTiff(netTiffFile)._header) 
+
+    print(SimpleTiff(localTiffFile).header)
+    print(SimpleTiff(netTiffFile).header)
+    assert(SimpleTiff(localTiffFile).header == SimpleTiff(netTiffFile).header) 
 
     #import cProfile
     # cProfile.run('ret = SimpleTiff(localTiffFile).get_svs_tile(10, 0, 0)')

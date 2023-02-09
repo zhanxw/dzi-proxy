@@ -3,7 +3,7 @@ from io import BytesIO
 from struct import unpack_from
 import numpy as np
 import math
-from imagecodecs import jpeg2k_decode
+from imagecodecs import jpeg2k_decode, jpeg_decode
 from functools import lru_cache
 
 def empty(*args):
@@ -139,12 +139,15 @@ class TiffPage:
             self.is_tiled = True
         if '323:TileLength' in entriesDict:
             self.tilelength = entriesDict['323:TileLength'][2]
-        self.imagedepth = entriesDict['32997:ImageDepth'][2]
+        if '32997:ImageDepth' in entriesDict:
+            self.imagedepth = entriesDict['32997:ImageDepth'][2]
         self.samplesperpixel = entriesDict['277:SamplesPerPixel'][2]
         if '324:TileOffsets' in entriesDict:
             self.dataoffsets = self.readArray(entriesDict['324:TileOffsets'])
         if '325:TileByteCounts' in entriesDict:
             self.databytecounts =  self.readArray(entriesDict['325:TileByteCounts'])
+        if '259:Compression' in entriesDict:
+            self.compression = entriesDict['259:Compression'][2]
         self.dtype = np.uint8
     def readArray(self, val):
         (type, count, v, o) = val
@@ -331,8 +334,13 @@ class SimpleTiff:
                 data = fh.seek_and_read(offset, bytecount)
                 debug('index offset: ', index, offset, bytecount, offset + bytecount)
                 # tile , indices, shape = jpeg2k_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 
-                tile = jpeg2k_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 
-
+                if page.compression == 33003:
+                    tile = jpeg2k_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 
+                elif page.compression == 7:
+                    tile = jpeg_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 
+                else:
+                    debug("A suitable decoder is not specified")
+                    tile = jpeg2k_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 
                 im_i = (i - tile_i0) * tile_height
                 im_j = (j - tile_j0) * tile_width
                 out[:, im_i: im_i + tile_height, im_j: im_j + tile_width, :] = tile
@@ -342,19 +350,31 @@ class SimpleTiff:
 
         return out[:, im_i0: im_i0 + h, im_j0: im_j0 + w, :]
 
+
 if __name__ == "__main__":
-    pathPrefix = '/Users/zhanxw/Downloads/test.tiff/'
-    urlPrefix = 'http://localhost:8000/'
-    localTiffFile = pathPrefix + '10021.svs'
-    netTiffFile = urlPrefix + '10021.svs'
+    def test():
+        pathPrefix = '/Users/zhanxw/Downloads/test.tiff/'
+        urlPrefix = 'http://localhost:8000/'
+        localTiffFile = pathPrefix + '10021.svs'
+        netTiffFile = urlPrefix + '10021.svs'
 
-    print(SimpleTiff(localTiffFile).header)
-    print(SimpleTiff(netTiffFile).header)
-    assert(SimpleTiff(localTiffFile).header == SimpleTiff(netTiffFile).header) 
+        print(SimpleTiff(localTiffFile).header)
+        print(SimpleTiff(netTiffFile).header)
+        assert(SimpleTiff(localTiffFile).header == SimpleTiff(netTiffFile).header) 
 
-    #import cProfile
-    # cProfile.run('ret = SimpleTiff(localTiffFile).get_svs_tile(10, 0, 0)')
-    ret = SimpleTiff(localTiffFile).get_svs_tile(10, 0, 0)
-    fOut = open('test.jpeg', 'wb')
+    import sys
+    def usage():
+        print("Usage:")
+        print("\tpython SimpleTiff.py in.svs level col row out.jpeg")
+    if len(sys.argv) != 6:
+        usage()
+        sys.exit(1)
+    
+    scriptFile, tiffFile, level, col, row, outFn = sys.argv
+    level, col, row = map(int, (level, col, row))
+    ret = SimpleTiff(tiffFile).get_svs_tile(level, col, row)
+    fOut = open(outFn, 'wb')
     fOut.write(ret)
     fOut.close()
+    print("[ %s ] level [ %d ] col [ %d ] row [ %d ] is converted into [ %s ]" % (tiffFile, level, col, row, outFn))
+    sys.exit(0) 

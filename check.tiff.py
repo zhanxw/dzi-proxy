@@ -112,17 +112,23 @@ def getStripInfo(entries):
     bytes = []
     for e in entries:
         if e[0] == '273:StripOffsets':
-            f.seek(e[3])
-            for i in range(e[2]):
-                assert(e[1] == 'LONG')
-                v = f.read(4)
-                offset.append(struct.unpack_from(endian + "I", v)[0])
+            if e[2] > 1: ## likely  e[3] is offset instead of value
+                f.seek(e[3])
+                for i in range(e[2]):
+                    assert(e[1] == 'LONG')
+                    v = f.read(4)
+                    offset.append(struct.unpack_from(endian + "I", v)[0])
+            else:
+                offset.append(e[3])
         if e[0] == '279:StripByteCounts':
-            f.seek(e[3])
-            for i in range(e[2]):
-                assert(e[1] == 'LONG')
-                v = f.read(4)
-                bytes.append(struct.unpack_from(endian + "I", v)[0])    
+            if e[2] > 1: ## likely e[3] is offset instead of value
+                f.seek(e[3])
+                for i in range(e[2]):
+                    assert(e[1] == 'LONG')
+                    v = f.read(4)
+                    bytes.append(struct.unpack_from(endian + "I", v)[0])    
+            else:
+                bytes.append(e[3])
     return (offset, bytes)
 def getStrips(offsets, bytes):
     res = []
@@ -200,6 +206,7 @@ if entriesDict.get('262:PhotometricInterpretation')[2] == 2: ## RGB
         (offsets, bytes) = getStripInfo(entries)
         res = getStrips(offsets, bytes)
        
+        # below is to examine JPEG contents
         data = res[0]
         from struct import unpack
         marker_mapping = { \
@@ -226,3 +233,28 @@ if entriesDict.get('262:PhotometricInterpretation')[2] == 2: ## RGB
                 data = data[2+lenchunk:]            
             if len(data)==0:
                 break       
+
+        ## below let's try to decode JPEG
+        
+        # import imagecodecs
+        # print('\n'.join(dir(imagecodecs)))
+        from imagecodecs import jpeg_decode
+        data = res[0]
+        import numpy as np
+        from PIL import Image as im
+        if '258:BitsPerSample' in entriesDict:
+            bitspersample = 2 ** entriesDict.get('258:BitsPerSample')[1]
+        else:
+            bitspersample = None
+        if '347:JPEGTables' in entriesDict:
+            type, count, value, offset = entriesDict.get('347:JPEGTables')
+            f.seek(offset)
+            jpegTable = f.read(count)
+        else:
+            jpegTable = None
+        img = jpeg_decode(data, bitspersample=bitspersample, tables=jpegTable)
+        # img = img.reshape((entriesDict['257:ImageLength'][2], entriesDict['256:ImageWidth'][2],3))
+        # img = img / 65535 * 255
+        # print(img.shape) # 8192 x 3
+        imgH = im.fromarray(np.uint8(img), mode = 'RGB')
+        imgH.show()

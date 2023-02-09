@@ -129,6 +129,27 @@ def getStripInfo(entries):
                     bytes.append(struct.unpack_from(endian + "I", v)[0])    
             else:
                 bytes.append(e[3])
+    if len(offset) == 0 and len(bytes) == 0:
+        print("Does not have tags: 273:StripOffsets nor 279:StripByteCounts, try tile-related tags")
+        for e in entries:
+            if e[0] == '324:TileOffsets':
+                if e[2] > 1: ## likely  e[3] is offset instead of value
+                    f.seek(e[3])
+                    for i in range(e[2]):
+                        assert(e[1] == 'LONG')
+                        v = f.read(4)
+                        offset.append(struct.unpack_from(endian + "I", v)[0])
+                else:
+                    offset.append(e[3])
+            if e[0] == '325:TileByteCounts':
+                if e[2] > 1: ## likely e[3] is offset instead of value
+                    f.seek(e[3])
+                    for i in range(e[2]):
+                        assert(e[1] == 'LONG')
+                        v = f.read(4)
+                        bytes.append(struct.unpack_from(endian + "I", v)[0])    
+                else:
+                    bytes.append(e[3])       
     return (offset, bytes)
 def getStrips(offsets, bytes):
     res = []

@@ -30,7 +30,7 @@ class FileReader:
                     timeout=5)
                     .content).read()
             if len(data) != bytecount:
-                raise ValueError('requests.get() failed with wrong number of bytes')                
+                debug('requests.get() failed with wrong number of bytes: request [ %d ] bytes, received [ %d ] bytes' % (bytecount, len(data)))                
         else: 
             self.filehandle.seek(offset)
             data = self.filehandle.read(bytecount)
@@ -148,6 +148,10 @@ class TiffPage:
             self.databytecounts =  self.readArray(entriesDict['325:TileByteCounts'])
         if '259:Compression' in entriesDict:
             self.compression = entriesDict['259:Compression'][2]
+        if '347:JPEGTables' in entriesDict:
+            self.jpegTable = self.readBytes(entriesDict['347:JPEGTables'])
+        else:
+            self.jpegTable = None
         self.dtype = np.uint8
     def readArray(self, val):
         (type, count, v, o) = val
@@ -155,7 +159,11 @@ class TiffPage:
         data = self.parent.filehandle.seek_and_read(o, 4 * count)
         ret = unpack_from(self.parent._endian + str(count) + "I", data)
         return ret
-        
+    def readBytes(self, val): ## this is used for reading JPEGTables
+        (type, count, v, o) = val
+        assert(type == 'UNDEFINED')
+        ret = self.parent.filehandle.seek_and_read(o, count)
+        return ret        
 class SimpleTiff:
     def __init__(self, name):
         self._name = name
@@ -335,9 +343,9 @@ class SimpleTiff:
                 debug('index offset: ', index, offset, bytecount, offset + bytecount)
                 # tile , indices, shape = jpeg2k_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 
                 if page.compression == 33003:
-                    tile = jpeg2k_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 
+                    tile = jpeg2k_decode(data, tables = page.jpegTable) # jpegtables) #page.decode(data, index, jpegtables) 
                 elif page.compression == 7:
-                    tile = jpeg_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 
+                    tile = jpeg_decode(data, tables = page.jpegTable) # jpegtables) #page.decode(data, index, jpegtables) 
                 else:
                     debug("A suitable decoder is not specified")
                     tile = jpeg2k_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 

@@ -273,7 +273,8 @@ if entriesDict.get('262:PhotometricInterpretation')[2] == 2: ## RGB
             jpegTable = f.read(count)
         else:
             jpegTable = None
-        img = jpeg_decode(data, bitspersample=bitspersample, tables=jpegTable)
+        colorspace, outcolorspace = (2, 2) #RGB, refer to tifffile.py  jpeg_decode_colorspace()
+        img = jpeg_decode(data, bitspersample=bitspersample, tables=jpegTable, colorspace=colorspace, outcolorspace=outcolorspace,)
         # img = img.reshape((entriesDict['257:ImageLength'][2], entriesDict['256:ImageWidth'][2],3))
         # img = img / 65535 * 255
         # print(img.shape) # 8192 x 3

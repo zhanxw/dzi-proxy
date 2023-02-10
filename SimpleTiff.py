@@ -152,6 +152,10 @@ class TiffPage:
             self.jpegTable = self.readBytes(entriesDict['347:JPEGTables'])
         else:
             self.jpegTable = None
+        if '262:PhotometricInterpretation' in entriesDict:
+            self.photometric = entriesDict['262:PhotometricInterpretation'][2]
+        else:
+            self.photometric = None            
         self.dtype = np.uint8
     def readArray(self, val):
         (type, count, v, o) = val
@@ -264,7 +268,6 @@ class SimpleTiff:
         page_height = min(255 * scale, ref_size[1] - page_y - 1)
         (page_x, page_y, page_width, page_height) = map(int, (page_x, page_y, page_width, page_height))
 
-        import read_region
         # ret = read_region.read_region(p0, 100, 200, 255, 255)
         debug("read_region:", ref_size, page_y, page_x, page_height, page_width )
         ret = self.read_region(ref, page_y, page_x, page_height, page_width, None) # TODO: add cache back cache[level])
@@ -345,7 +348,14 @@ class SimpleTiff:
                 if page.compression == 33003:
                     tile = jpeg2k_decode(data, tables = page.jpegTable) # jpegtables) #page.decode(data, index, jpegtables) 
                 elif page.compression == 7:
-                    tile = jpeg_decode(data, tables = page.jpegTable) # jpegtables) #page.decode(data, index, jpegtables) 
+                    # refer to tifffile.py  jpeg_decode_colorspace()
+                    # 2 means RGB
+                    if page.photometric == 2:
+                        colorspace = 2
+                    else:
+                        colorspace = None
+                    outcolorspace = 2    
+                    tile = jpeg_decode(data, tables = page.jpegTable, colorspace=colorspace, outcolorspace=outcolorspace,) # jpegtables) #page.decode(data, index, jpegtables) 
                 else:
                     debug("A suitable decoder is not specified")
                     tile = jpeg2k_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 

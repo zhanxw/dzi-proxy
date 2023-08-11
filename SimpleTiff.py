@@ -1,10 +1,15 @@
 import requests
+import re
+import numbers
 from io import BytesIO
 from struct import unpack_from
 import numpy as np
 import math
 from imagecodecs import jpeg2k_decode, jpeg_decode
 from functools import lru_cache
+from PIL import Image
+
+from utils.deepzoom import DeepZoomGenerator
 
 def empty(*args):
     pass
@@ -12,6 +17,7 @@ if False: # set it to True for debugging
     debug = print
 else:
     debug = empty
+
 
 class FileReader:
     def __init__(self, fn):
@@ -22,6 +28,7 @@ class FileReader:
             self._remote = False
             self._name = fn
             self.filehandle = open(fn, 'rb')
+
     @lru_cache
     def seek_and_read(self, offset, bytecount):
         if self._remote:
@@ -67,16 +74,37 @@ TAG_DICT = {
     34675:'ICC Profile',
 }
 
+PHOTOMETRIC_SAMPLES = {
+    0: 1,  # MINISWHITE
+    1: 1,  # MINISBLACK
+    2: 3,  # RGB
+    3: 1,  # PALETTE
+    4: 1,  # MASK
+    5: 4,  # SEPARATED
+    6: 3,  # YCBCR
+    8: 3,  # CIELAB
+    9: 3,  # ICCLAB
+    10: 3,  # ITULAB
+    32803: 1,  # CFA
+    32844: 1,  # LOGL ?
+    32845: 3,  # LOGLUV
+    34892: 3,  # LINEAR_RAW ?
+    51177: 1,  # DEPTH_MAP ?
+    52527: 1,  # SEMANTIC_MASK ?
+}
+
+
 class TiffPage:
     def __init__(self, offset, data, tiffFile):
         self.imagewidth = None
-        self.imaglength = None
+        self.imagelength = None
         self.dataoffsets = []
         self.databytecounts = []
         self._offset = offset
         self._next_offset = None
         self.parent = tiffFile
         self.parse_data(data)
+
     def parse_data(self, data):
         endian = self.parent._endian
         debug("-"*25 + str(self._offset) + " " + "0x%06x" % self._offset + "-"*25)
@@ -122,7 +150,6 @@ class TiffPage:
             entries[idx] = (str(tag) + ":" + TAG_DICT.get(tag, "***") , type, count, v, o)
             entriesDict[entries[idx][0]] = (type, count, v, o)
 
-        
         for idx, val in enumerate(entries):
             tag, type, count, v, o = val
             val = tag, type, str(count), str(v), str(o)
@@ -137,8 +164,12 @@ class TiffPage:
         if '322:TileWidth' in entriesDict:
             self.tilewidth = entriesDict['322:TileWidth'][2]
             self.is_tiled = True
+        else:
+            self.tilewidth = 0
         if '323:TileLength' in entriesDict:
             self.tilelength = entriesDict['323:TileLength'][2]
+        else:
+            self.tilelength = 0
         if '32997:ImageDepth' in entriesDict:
             self.imagedepth = entriesDict['32997:ImageDepth'][2]
         self.samplesperpixel = entriesDict['277:SamplesPerPixel'][2]
@@ -155,19 +186,100 @@ class TiffPage:
         if '262:PhotometricInterpretation' in entriesDict:
             self.photometric = entriesDict['262:PhotometricInterpretation'][2]
         else:
-            self.photometric = None            
+            self.photometric = None  
+        if '270:ImageDescription' in entriesDict:
+            self.description = entriesDict['270:ImageDescription'][2]
+        else:
+            self.description = ''
         self.dtype = np.uint8
+        self.shape = (self.imagelength, self.imagewidth, PHOTOMETRIC_SAMPLES[self.photometric])
+        self.ndim = len(self.shape)
+
     def readArray(self, val):
         (type, count, v, o) = val
         assert(type == 'LONG')
         data = self.parent.filehandle.seek_and_read(o, 4 * count)
         ret = unpack_from(self.parent._endian + str(count) + "I", data)
         return ret
+
     def readBytes(self, val): ## this is used for reading JPEGTables
         (type, count, v, o) = val
         assert(type == 'UNDEFINED')
         ret = self.parent.filehandle.seek_and_read(o, count)
-        return ret        
+        return ret 
+
+
+class ImageTiles(object):
+    """ Generate image tiles with in a given region or load existing tiles.
+        Always call image_tiles.load_tiles() first before access other functions.
+        rois return tile parameters: [x0, y0, w, h].
+        coords return padded parameters: [x0, y0, w, h] in raw image, require padding.
+        pad_width return pad width to fill image with patch_size, require padding.
+    """
+    def __init__(self, image_size, patch_size, padding=None, box=None):
+        if isinstance(image_size, numbers.Number):
+            image_size = (image_size, image_size)
+        self.image_size = image_size
+        
+        if isinstance(patch_size, numbers.Number):
+            patch_size = (patch_size, patch_size)
+        self.patch_size = patch_size
+        
+        if isinstance(padding, numbers.Number):
+            padding = (padding, padding)
+        self.padding = padding
+        
+        w, h = self.image_size
+        if box is None:
+            x0, y0, x1, y1 = [0, 0, w, h]
+        else:
+            x0, y0 = max(box[0], 0), max(box[1], 0)
+            x1, y1 = min(box[2], w), min(box[3], h)
+        self.box = [x0, y0, x1, y1]
+        self.shape = None
+    
+    def load_tiles(self, tiles=None):
+        # Calculate x_t and y_t
+        if tiles is not None:
+            self.x_t, self.y_t = tiles[:,0], tiles[:,1]
+        else:
+            x0, y0, x1, y1 = self.box
+            w_p, h_p = self.patch_size
+            self.y_t, self.x_t = np.mgrid[y0:y1:h_p, x0:x1:w_p]
+        self.shape = self.x_t.shape
+
+        return self
+    
+    def rois(self):
+        x0, y0, x1, y1 = self.box
+        w_p, h_p = self.patch_size
+        
+        h_t, w_t = np.minimum(h_p, y1 - self.y_t), np.minimum(w_p, x1 - self.x_t)
+        # h_t, w_t = (y1 - self.y_t).clip(max=h_p), (x1 - self.x_t).clip(max=w_p)
+        return np.stack([self.x_t, self.y_t, w_t, h_t], -1)
+    
+    def coords(self, padding=None):
+        w, h = self.image_size
+        w_p, h_p = self.patch_size
+        w_d, h_d = padding or self.padding
+        
+        # we use (0, 0) instead of (x0, y0) to pad with original image
+        x_s, y_s = (self.x_t - w_d).clip(0), (self.y_t - h_d).clip(0)
+        w_s, h_s = np.minimum(self.x_t + w_p + w_d, w) - x_s, np.minimum(self.y_t + h_p + h_d, h) - y_s
+        
+        return np.stack([x_s, y_s, w_s, h_s], axis=-1)
+    
+    def pad_width(self, padding=None):
+        w, h = self.image_size
+        w_p, h_p = self.patch_size
+        w_d, h_d = padding or self.padding
+        
+        pad_l, pad_u = (w_d - self.x_t).clip(0), (h_d - self.y_t).clip(0)
+        pad_r, pad_d = (self.x_t + w_p + w_d - w).clip(0), (self.y_t + h_p + h_d - h).clip(0)
+        
+        return np.stack([pad_l, pad_r, pad_u, pad_d], axis=-1)
+
+
 class SimpleTiff:
     def __init__(self, name):
         self._name = name
@@ -175,6 +287,8 @@ class SimpleTiff:
         self.pages = []
         self._endian = None
         self.open()
+        self.register_entries()
+
     def open(self):
         # read header
         self.header = self.filehandle.seek_and_read(0, 8)
@@ -202,7 +316,50 @@ class SimpleTiff:
             data = self.read_ifd_block(p._next_offset)
             p = TiffPage(p._next_offset, data, self)
             self.pages.append(p)
-            
+    
+    def register_entries(self, verbose=1):
+        self.magnitude = None
+        self.mpp = None
+        self.description = None
+        self.page_indices = []
+        self.level_dims = []
+        self.level_downsamples = []
+
+        slide = self
+        self.description = slide.pages[0].description
+
+        # magnification
+        print(self.description)
+        val = re.findall(r'\|((?i:AppMag)|(?i:magnitude)) = (?P<mag>[\d.]+)', self.description)
+        self.magnitude = float(val[0][1]) if val else None
+        if verbose and self.magnitude is None:
+            print(f"Didn't find magnitude in description.")
+
+        # mpp
+        val = re.findall(r'\|((?i:MPP)) = (?P<mpp>[\d.]+)', self.description)
+        self.mpp = float(val[0][1]) if val else None
+        if verbose and self.mpp is None:
+            print(f"Didn't find mpp in description.")
+
+        ## level_dims consistent with open_slide: (w, h), (OriginalHeight, OriginalWidth)
+        level_dims, scales, page_indices = [(slide.pages[0].shape[1], slide.pages[0].shape[0])], [1.0], [0]
+        for page_idx, page in enumerate(slide.pages[1:], 1):
+            if 'label' in page.description or 'macro' in page.description:
+                continue
+            if page.tilewidth == 0 or page.tilelength == 0:
+                continue
+            h, w = page.shape[0], page.shape[1]
+            if round(level_dims[0][0]/w) == round(level_dims[0][1]/h):
+                level_dims.append((w, h))
+                scales.append(level_dims[0][0]/w)
+                page_indices.append(page_idx)
+
+        order = sorted(range(len(scales)), key=lambda x: scales[x])
+        self.page_indices = [page_indices[idx] for idx in order]
+        self.level_dims = [level_dims[idx] for idx in order]
+        self.level_downsamples = [scales[idx] for idx in order]
+        self.n_levels = len(self.level_downsamples)
+
     def close(self):
         self.filehandle.close()
 
@@ -221,64 +378,68 @@ class SimpleTiff:
     # from SimpleTiff import SimpleTiff
     # import math
     # cache = {}
-    def get_svs_tile(self, level, col, row):
-        #if level not in cache:
-        #    cache[level] = {}
-        ## find the tiff image to work on
+    
+    @property
+    def level_dimensions(self):
+        return tuple(self.level_dims)
+    
+    def info(self):
+        return {
+            'magnitude': self.magnitude,
+            'mpp': self.mpp,
+            'level_dims': self.level_dims,
+            'description': self.description,
+        }
 
-        ## find tiff tiles 
-        ## extract images
-        ## return results
+    def get_scales(self, x):
+        """ x: (w, h) image_size tuple or a page index. """
+        if isinstance(x, numbers.Number):
+            w, h = self.level_dims[x]
+        else:
+            w, h = x
+        
+        return (w, h), [np.array([w/_[0], h/_[1]]) for _ in self.level_dims]
 
-        # return None
-        # t = TiffFile(tiffFile)
-        # t = SimpleTiff(tiffFile)
-        t = self
-        p0 = t.pages[0]
-        p0_size = [p0.imagewidth, p0.imagelength]
-        p3 = t.pages[3]
-        p3_size = [p3.imagewidth, p3.imagelength]
-        page  = [p for p in t.pages if math.fabs(p.imagewidth/p.imagelength - p0.imagewidth / p0.imagelength) < 0.01]
-        page_size = [ (p.imagewidth, p.imagelength) for p in page ]
-        s = (p0.imagewidth, p0.imagelength)
-        dims = []
-        while True:
-            dims.append(s)
-            i = (math.ceil(s[0]/2), math.ceil(s[1]/2))
-            if i[0] == 1 and i[1] == 1: 
-                break
-            else:
-                s = i
-        dims.append(i)
-        # level = 5
-        # col = 1
-        # row = 2
-        ref_page_size = p3
-        requested_dims = dims[-(level+1)]
+    def get_resize_level(self, x=None, downsample_only=False, epsilon=1e-2):
+        """ Get nearest page level index for a given image_size/factor.
+            x: (w, h) tuple or a downsampled scale_factor (.
+            downsample_only: only pick the 
+        """
+        if isinstance(x, numbers.Number):
+            factor = x
+        else:
+            w, h = x
+            factor = min(self.level_dims[0][0]/w, self.level_dims[0][1]/h)
+        rel_scales = np.array([d / factor for d in self.level_downsamples])
+        
+        if downsample_only:
+            assert factor >= 1, f"Factor={factor}, cannot be downsampled."
+            return np.where(rel_scales <= 1 + epsilon)[0][-1]
+        else:
+            return np.abs(np.log(rel_scales)).argmin()
 
-        ref = [ p for p in page if p.imagewidth >= requested_dims[0]][-1]
-        ref_size = [ref.imagewidth, ref.imagelength]
-        scale = ref_size[0] / requested_dims[0]
-        debug("scale = ", scale, ref_size[0], requested_dims[0])
-        request_x = col 
-        request_y = row
-        page_x = min(request_x * 255 * scale, ref_size[0])
-        page_y = min(request_y * 255 * scale, ref_size[1])
-        page_width = min(255 * scale, ref_size[0] - page_x - 1)
-        page_height = min(255 * scale, ref_size[1] - page_y - 1)
-        (page_x, page_y, page_width, page_height) = map(int, (page_x, page_y, page_width, page_height))
+    def deepzoom_coords(self, patch_size, padding=0, image_size=0, box=None):
+        """ Generate tile coordinates.
+            patch_size: patch_size of int or (patch_width, patch_height).
+            page: the page index or image_size.
+        """
+        (w, h), scales = self.get_scales(image_size)
+        tiles = ImageTiles((w, h), patch_size=patch_size, padding=padding, box=box)
+        tiles.load_tiles()
+        
+        return tiles.coords()
 
-        # ret = read_region.read_region(p0, 100, 200, 255, 255)
-        debug("read_region:", ref_size, page_y, page_x, page_height, page_width )
-        ret = self.read_region(ref, page_y, page_x, page_height, page_width, None) # TODO: add cache back cache[level])
-        import cv2
-        ret_s = cv2.resize(ret[0,:], (255, 255))
-        _, JPEG = cv2.imencode('.jpeg', ret_s)
-        return JPEG.tobytes()
+    def get_patch(self, x, level=0):        
+        x0, y0, w, h = x
+        # tifffile don't reorder page, so need convertion here. Little bit slow.
+        tiff_page_idx = self.page_indices[level] % len(self.pages)
+        patch = self.read_region(self.pages[tiff_page_idx], y0, x0, h, w)
+        patch = Image.fromarray(patch[0])
 
-    # def read_region(self, page, i0, j0, h, w, cache):
+        return patch
+
     # @profile
-    def read_region(self, page, i0, j0, h, w, cache):
+    def read_region(self, page, i0, j0, h, w, cache=None):
         """Extract a crop from a TIFF image file directory (IFD).
         
         Only the tiles englobing the crop area are loaded and not the whole page.
@@ -346,7 +507,7 @@ class SimpleTiff:
                 debug('index offset: ', index, offset, bytecount, offset + bytecount)
                 # tile , indices, shape = jpeg2k_decode(data) # jpegtables) #page.decode(data, index, jpegtables) 
                 if page.compression == 33003:
-                    tile = jpeg2k_decode(data, tables = page.jpegTable) # jpegtables) #page.decode(data, index, jpegtables) 
+                    tile = jpeg2k_decode(data) # , tables = page.jpegTable) # jpegtables) #page.decode(data, index, jpegtables) 
                 elif page.compression == 7:
                     # refer to tifffile.py  jpeg_decode_colorspace()
                     # 2 means RGB

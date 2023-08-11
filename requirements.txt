@@ -1,0 +1,5 @@
+flask<2.3.0
+flask_cors
+Pillow
+imagecodecs
+requests

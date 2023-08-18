@@ -467,12 +467,10 @@ class SimpleTiff:
         if h < 1 or w < 1:
             raise ValueError("h and w must be strictly positive.")
 
-        if i0 < 0 or j0 < 0 or i0 + h >= im_height or j0 + w >= im_width:
-            debug(i0, h, im_height, " --- ", j0, w, im_width)
-            raise ValueError("Requested crop area is out of image bounds.")
-
         tile_width, tile_height = page.tilewidth, page.tilelength
         i1, j1 = i0 + h, j0 + w
+        i0, j0 = max(0, i0), max(0, j0)
+        i1, j1 = min(i0 + h, im_height), min(j0 + w, im_width)
 
         tile_i0, tile_j0 = i0 // tile_height, j0 // tile_width
         tile_i1, tile_j1 = np.ceil([i1 / tile_height, j1 / tile_width]).astype(int)

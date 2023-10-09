@@ -190,4 +190,5 @@ if __name__ == '__main__':
     )
 
     (opts, args) = parser.parse_args()
-    app.run(host=opts.host, port=opts.port, threaded=True)    
+    ## imagecodec is not thread-safe, will cause problem in production server.
+    app.run(host=opts.host, port=opts.port, threaded=False, processes=8)

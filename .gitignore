@@ -8,6 +8,7 @@ node_modules/
 __pycache__/
 .DS_Store
 test.ipynb
+utils_image.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

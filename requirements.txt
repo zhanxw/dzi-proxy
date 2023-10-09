@@ -1,5 +1,6 @@
+Pillow
 flask<2.3.0
 flask_cors
-Pillow
 imagecodecs
+tifffile>=2023.8.12
 requests

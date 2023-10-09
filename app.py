@@ -13,10 +13,9 @@ app.config['CORS_HEADERS'] = 'Content-Type'
 
 # from pydantic import BaseSettings
 class Settings(object):
-    slide_dir: str = "./slides_folder"
     slide_cache_size: int = 10
 
-    deepzoom_format: str = "jpeg"
+    # deepzoom_format: str = "jpeg"
     deepzoom_tile_size: int = 254
     deepzoom_overlap: int = 1
     deepzoom_limit_bounds: bool = True
@@ -60,9 +59,32 @@ def _setup():
 def proxy_dzi(path):
     print("proxy_dzi: " + path)
     slide = _get_slide(path)
+    if path.endswith('.tiff'):
+        deepzoom_format = 'png'
+    else:
+        deepzoom_format = 'jpeg'
 
-    resp = make_response(slide.get_dzi(settings.deepzoom_format))
+    resp = make_response(slide.get_dzi(deepzoom_format))
     resp.mimetype = 'application/xml'
+
+    return resp
+
+
+@app.route('/proxy/<path:path>.params')
+@cross_origin()
+def proxy_params(path):
+    print("proxy_params: " + path)
+    slide = _get_slide(path)
+    info = slide._osr.info()
+    params = {
+        'slide_mpp': info['mpp'],
+        'magnitude': info['magnitude'],
+        'description': info['description'],
+    }
+
+    resp = make_response(params)
+    resp.mimetype = 'json'
+    print(resp)
 
     return resp
 
@@ -74,7 +96,7 @@ def proxy_tile(path, level, col, row, format):
     slide = _get_slide(path)
 
     try:
-        tile = slide.get_tile(level, (col, row))
+        tile = slide.get_tile(level, (col, row), format=format)
     except ValueError:
         abort(404)  # Invalid level or coordinates
 
@@ -120,6 +142,19 @@ def proxy_svs_dzi():
     if url:
         print('serve url: ', url)
         return proxy_dzi(url)
+
+
+@app.route('/proxy/svs/params', methods=['GET', 'POST'])
+def proxy_svs_params():
+    print("we got here!!!!!!")
+    fn = request.args.get('file', None)
+    url = request.args.get('url', None)
+    if fn:
+        print('serve fn: ', fn)
+        return proxy_params(fn)
+    if url:
+        print('serve url: ', url)
+        return proxy_params(url)
 
 
 @app.route('/proxy/svs/dummy_files/<int:level>/<int:col>_<int:row>.<format>')
